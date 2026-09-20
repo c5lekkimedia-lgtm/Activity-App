@@ -220,12 +220,12 @@
    for a Sunday School's worth of children).
    ===================================================================== */
 const firebaseConfig = {
-  apiKey: "AIzaSyDElW453fmp8EiTDL2rkx9yJE4_7DQriWg",
-  authDomain: "tcn-bible-adventure.firebaseapp.com",
-  projectId: "tcn-bible-adventure",
-  storageBucket: "tcn-bible-adventure.firebasestorage.app",
-  messagingSenderId: "195171000964",
-  appId: "1:195171000964:web:09ade44f8d3f49fc3e18d1"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
@@ -315,8 +315,16 @@ function watchLessons(){
       const pick = pickCurrentLesson();
       currentLessonId = pick ? pick.id : null;
     }
+    // Never force-refresh an open lesson editor: a background lesson update
+    // (including the teacher's own in-flight publish) would otherwise wipe
+    // out characters, quiz JSON and other fields the teacher hasn't saved yet.
+    if(isEditingLessonScreen()) return;
     refreshCurrentScreen();
   }, err=>{ console.error(err); setSyncPill('offline'); });
+}
+function isEditingLessonScreen(){
+  const teacherScreen = document.getElementById('teacher');
+  return !!(teacherScreen && teacherScreen.classList.contains('active') && teacherSection==='editor');
 }
 function getLesson(id){ return STATE.lessons.find(l=>l.id===id) || STATE.lessons[0] || null; }
 function parseLessonDate(s){ const t = Date.parse(String(s||'').replace(/^[A-Za-z]+,\s*/,'')); return isNaN(t)?null:t; }
@@ -1025,6 +1033,7 @@ if(dbReady){
 /* ===================== TEACHER DASHBOARD ===================== */
 let editingLessonId=null, teacherCharacters=[{name:'',clue:''}], teacherCharactersInitializedFor='unset';
 let teacherSection='dashboard', draftImage=null;
+let flashMessage=null; // one-shot banner shown at the top of whichever teacher screen renders next
 
 function renderCharacterRows(){
   const wrap=document.getElementById('tfCharacters'); if(!wrap) return;
@@ -1039,8 +1048,8 @@ function renderCharacterRows(){
 function addCharacterRow(){ teacherCharacters.push({name:'',clue:''}); renderCharacterRows(); }
 function removeCharacterRow(i){ teacherCharacters.splice(i,1); if(!teacherCharacters.length) teacherCharacters=[{name:'',clue:''}]; renderCharacterRows(); }
 function cancelEdit(){ editingLessonId=null; teacherCharactersInitializedFor='unset'; draftImage=null; teacherSection='lessons'; renderTeacher(); }
-function teacherTab(name){ teacherSection=name; editingLessonId=null; teacherCharactersInitializedFor='unset'; draftImage=null; renderTeacher(); }
-function teacherEdit(id){ editingLessonId=id; teacherSection='editor'; teacherCharactersInitializedFor='unset'; draftImage = id ? (lessonImage(getLesson(id))||null) : null; renderTeacher(); }
+function teacherTab(name){ teacherSection=name; editingLessonId=null; teacherCharactersInitializedFor='unset'; draftImage=null; flashMessage=null; renderTeacher(); }
+function teacherEdit(id){ editingLessonId=id; teacherSection='editor'; teacherCharactersInitializedFor='unset'; draftImage = id ? (lessonImage(getLesson(id))||null) : null; flashMessage=null; renderTeacher(); }
 function teacherPreview(id){ if(id) currentLessonId=id; go('lesson'); }
 async function deleteLesson(id){
   const l=getLesson(id); if(!confirm('Delete "'+(l?l.topic:'this lesson')+'"? This cannot be undone.')) return;
@@ -1179,7 +1188,7 @@ function teacherEditor(){
   <label class="field">Status</label><select class="input" id="tfStatus">${['Draft','Review','Published'].map(s=>`<option ${status===s?'selected':''}>${s}</option>`).join('')}</select>
   <div class="toolbar">
     <button class="btn secondary" onclick="teacherPreview('${editing?.id||''}')">Preview as a child</button>
-    <button class="btn green" onclick="publishLesson()">${editing?'Save and publish':'Publish lesson'}</button>
+    <button class="btn green" id="publishBtn" onclick="publishLesson()">${editing?'Save and publish':'Publish lesson'}</button>
     ${editing?'<button class="btn secondary" onclick="cancelEdit()">Cancel</button>':''}
   </div>
   <label class="field">Quiz questions (JSON)</label>
@@ -1241,6 +1250,7 @@ function renderTeacher(){
       <div class="card action-card"><h2>👀 Child preview</h2><p>See this week as a child sees it.</p><button class="btn secondary" onclick="teacherPreview((pickCurrentLesson()||{}).id||'')">Preview this week</button></div>
     </div>${!STATE.lessons.length?`<div class="banner warn" style="margin-top:18px">No lessons yet. <button class="btn gold" style="margin-left:8px" onclick="seedStarterLessons()">Load the 4 starter lessons</button></div>`:''}`;
   if(teacherSection==='lessons') body=`
+    ${flashMessage?`<div class="banner ok">${esc(flashMessage)}</div>`:''}
     <div class="section-head"><div><h1>Lessons</h1><p class="muted">Manage the weekly teaching content.</p></div><button class="btn" onclick="teacherEdit(null)">New lesson</button></div>
     <div class="card"><div class="table-scroll"><table><tr><th>Picture</th><th>Date</th><th>Topic</th><th>Story</th><th>Status</th><th></th></tr>${teacherLessonRows()}</table></div></div>`;
   if(teacherSection==='editor') body=teacherEditor();
@@ -1295,16 +1305,29 @@ async function publishLesson(){
     return;
   }
   banner.style.background='#FFF3D6'; banner.textContent='Publishing…';
+  const publishBtn = document.getElementById('publishBtn');
+  if(publishBtn) publishBtn.disabled = true;
   try{
     if(editingLessonId){
       await updateDoc(doc(db,'lessons',editingLessonId), lessonObj);
     } else {
       const maxSeq = STATE.lessons.reduce((m,l)=>Math.max(m, l.seq||0), 0);
-      const ref = await addDoc(collection(db,'lessons'), {...lessonObj, seq: maxSeq+1, createdAt: serverTimestamp()});
-      editingLessonId = ref.id;
+      await addDoc(collection(db,'lessons'), {...lessonObj, seq: maxSeq+1, createdAt: serverTimestamp()});
     }
-    banner.style.background='#E6F6EC'; banner.textContent='Published — every device will pick this up automatically.';
+    // Leave the editor now that the write has been accepted, so the live
+    // lessons listener (which fires the moment this write lands) is free
+    // to refresh the screen without wiping a form that's still open.
+    teacherSection = 'lessons';
+    editingLessonId = null;
+    teacherCharactersInitializedFor = 'unset';
+    draftImage = null;
+    const savedBits = [];
+    savedBits.push(lessonObj.quiz.length + ' quiz question' + (lessonObj.quiz.length===1?'':'s'));
+    savedBits.push(lessonObj.characters.length + ' "Who am I?" character' + (lessonObj.characters.length===1?'':'s'));
+    flashMessage = 'Published "' + lessonObj.topic + '" with ' + savedBits.join(' and ') + '.';
+    renderTeacher();
   }catch(e){
+    if(publishBtn) publishBtn.disabled = false;
     banner.style.background='#FDEBEB'; banner.textContent='Publishing did not go through. Check the connection and try again.';
   }
 }
